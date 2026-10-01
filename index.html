@@ -103,7 +103,6 @@
     margin-top: 6px;
   }
 
-  /* LINKS */
   .col-links { display: flex; flex-direction: column; gap: 14px; }
   .section-title {
     font-size: 15px; font-weight: 700; color: #8a8aa0;
@@ -160,7 +159,6 @@
   .card.tiktok   { --accent: #FE2C55; animation-delay: 2.4s; }
   .card.github   { --accent: #c0c0c0; animation-delay: 3.2s; }
 
-  /* DIARY */
   .col-diary {
     background: rgba(20, 20, 32, 0.6);
     backdrop-filter: blur(16px);
@@ -221,7 +219,8 @@
     border-color: transparent;
     box-shadow: 0 0 15px rgba(77,163,255,0.5);
   }
-  .composer textarea {
+  .composer textarea,
+  .composer input[type="text"] {
     width: 100%;
     background: rgba(10,10,20,0.6);
     border: 1px solid rgba(255,255,255,0.08);
@@ -231,10 +230,8 @@
     font-size: 14px;
     font-family: inherit;
     outline: none;
-    min-height: 70px;
-    resize: vertical;
   }
-  .composer textarea:focus { border-color: #4da3ff; }
+  .composer textarea { min-height: 70px; resize: vertical; }
   .composer input[type="file"] {
     color: #8a8aa0;
     font-size: 12px;
@@ -264,7 +261,6 @@
   .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
   .hint { color: #666; font-size: 11px; text-align: center; }
 
-  /* FEED */
   .feed { display: flex; flex-direction: column; gap: 14px; }
   .post {
     background: rgba(30,30,46,0.6);
@@ -447,6 +443,28 @@
     font-size: 12px;
   }
   .footer span { color: #FE2C55; }
+
+  .loading-bar {
+    width: 100%;
+    height: 4px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 4px;
+    overflow: hidden;
+    display: none;
+  }
+  .loading-bar.active { display: block; }
+  .loading-bar::after {
+    content: '';
+    display: block;
+    height: 100%;
+    width: 40%;
+    background: linear-gradient(90deg, #4da3ff, #5865F2);
+    animation: loading 1s linear infinite;
+  }
+  @keyframes loading {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(300%); }
+  }
 </style>
 </head>
 <body>
@@ -523,8 +541,10 @@
       </div>
       <textarea id="postText" placeholder="Mày đang nghĩ gì?..."></textarea>
       <input type="file" id="fileInput" style="display:none;">
+      <input type="text" id="mediaUrl" placeholder="HOẶC dán link ảnh/video/nhạc (YouTube, Drive, Imgur...)" style="display:none;">
       <button class="btn-submit" id="btnSubmit" onclick="submitPost()">🚀 Đăng bài</button>
-      <p class="hint">Dữ liệu lưu trên Firebase — mọi người đều thấy</p>
+      <div class="loading-bar" id="loadingBar"></div>
+      <p class="hint">File nhỏ (&lt;1MB) chọn từ máy • File lớn hơn dán link</p>
     </div>
 
     <div class="feed" id="feed">
@@ -544,30 +564,25 @@ import {
   onSnapshot, query, orderBy, serverTimestamp,
   updateDoc, arrayUnion, arrayRemove
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import {
-  getStorage, ref as storageRef, uploadBytes, getDownloadURL
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 
-/* ========== ⚠️ DÁN CONFIG FIREBASE CỦA MÀY VÀO ĐÂY ========== */
+/* ========== ⚠️ CONFIG FIREBASE CỦA MÀY ========== */
 const firebaseConfig = {
-  apiKey: "DÁN_API_KEY",
-  authDomain: "DÁN_AUTH_DOMAIN",
-  projectId: "DÁN_PROJECT_ID",
-  storageBucket: "DÁN_STORAGE_BUCKET",
-  messagingSenderId: "DÁN_SENDER_ID",
-  appId: "DÁN_APP_ID"
+  apiKey: "AIzaSyB_QxRg7WpxAsShaJ14iQsaolehDjxiU9A",
+  authDomain: "hql-web.firebaseapp.com",
+  projectId: "hql-web",
+  storageBucket: "hql-web.firebasestorage.app",
+  messagingSenderId: "436585174170",
+  appId: "1:436585174170:web:2c43330262c18ff888fb23"
 };
-/* =========================================================== */
+/* ================================================ */
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-const storage = getStorage(app);
 
 let currentType = "text";
 let postsData = {};
 let unsubscribeComments = {};
 
-/* ========== USER ID ẨN DANH ========== */
 let userId = localStorage.getItem("hql_uid");
 if (!userId) {
   userId = "u_" + Math.random().toString(36).substring(2, 12);
@@ -576,7 +591,6 @@ if (!userId) {
 let userName = localStorage.getItem("hql_name") || "Khách";
 let userEmoji = localStorage.getItem("hql_emoji") || "🙂";
 
-/* ========== TOAST ========== */
 function showToast(msg) {
   const t = document.getElementById("toast");
   t.textContent = msg;
@@ -584,7 +598,10 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove("show"), 2500);
 }
 
-/* ========== COPY DISCORD ========== */
+function setLoading(on) {
+  document.getElementById("loadingBar").classList.toggle("active", on);
+}
+
 window.copyDiscord = (e) => {
   e.preventDefault();
   navigator.clipboard.writeText("hql.2311").then(() => {
@@ -599,42 +616,71 @@ window.copyDiscord = (e) => {
   });
 };
 
-/* ========== ĐỔI LOẠI BÀI ========== */
 window.setType = (type, btn) => {
   currentType = type;
   document.querySelectorAll(".type-tab").forEach(t => t.classList.remove("active"));
   btn.classList.add("active");
   const fi = document.getElementById("fileInput");
+  const mu = document.getElementById("mediaUrl");
+  const hint = document.querySelector(".hint");
+
   if (type === "text") {
     fi.style.display = "none";
+    mu.style.display = "none";
     fi.value = "";
+    mu.value = "";
+    hint.textContent = "Chỉ đăng văn bản";
   } else {
     fi.style.display = "block";
+    mu.style.display = "block";
     fi.accept = type + "/*";
+    hint.textContent = "Chọn file nhỏ (<1MB) hoặc dán link";
   }
 };
 
-/* ========== ĐĂNG BÀI ========== */
+/* Chuyển file thành base64 */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 window.submitPost = async () => {
   const text = document.getElementById("postText").value.trim();
   const fi = document.getElementById("fileInput");
+  const mu = document.getElementById("mediaUrl").value.trim();
   const file = fi.files[0];
 
-  if (!text && !file) return showToast("⚠️ Nhập gì đó hoặc chọn file!");
+  if (!text && !file && !mu) {
+    return showToast("⚠️ Nhập gì đó hoặc chọn file/link!");
+  }
 
   const btn = document.getElementById("btnSubmit");
   btn.disabled = true;
   btn.textContent = "⏳ Đang đăng...";
+  setLoading(true);
 
   try {
     let mediaURL = null;
     let mediaType = null;
 
-    if (file) {
-      const path = `posts/${Date.now()}_${file.name}`;
-      const sRef = storageRef(storage, path);
-      await uploadBytes(sRef, file);
-      mediaURL = await getDownloadURL(sRef);
+    // Ưu tiên link nếu có
+    if (mu) {
+      mediaURL = mu;
+      mediaType = currentType;
+    } else if (file) {
+      // Chuyển thành base64
+      if (file.size > 1024 * 1024) {
+        showToast("⚠️ File > 1MB. Hãy dán link thay vì chọn file!");
+        btn.disabled = false;
+        btn.textContent = "🚀 Đăng bài";
+        setLoading(false);
+        return;
+      }
+      mediaURL = await fileToBase64(file);
       mediaType = currentType;
     }
 
@@ -650,6 +696,7 @@ window.submitPost = async () => {
 
     document.getElementById("postText").value = "";
     fi.value = "";
+    document.getElementById("mediaUrl").value = "";
     showToast("✅ Đã đăng bài!");
   } catch (e) {
     showToast("❌ Lỗi: " + e.message);
@@ -657,9 +704,9 @@ window.submitPost = async () => {
 
   btn.disabled = false;
   btn.textContent = "🚀 Đăng bài";
+  setLoading(false);
 };
 
-/* ========== XÓA BÀI ========== */
 window.deletePost = async (postId) => {
   if (!confirm("Xóa bài này?")) return;
   try {
@@ -670,7 +717,6 @@ window.deletePost = async (postId) => {
   }
 };
 
-/* ========== LIKE ========== */
 window.toggleLike = async (postId) => {
   const post = postsData[postId];
   if (!post) return;
@@ -684,7 +730,6 @@ window.toggleLike = async (postId) => {
   }
 };
 
-/* ========== ĐẾM VIEW ========== */
 async function incrementView(postId) {
   const post = postsData[postId];
   if (!post) return;
@@ -698,14 +743,12 @@ async function incrementView(postId) {
   } catch (e) { console.warn(e); }
 }
 
-/* ========== MỞ/ĐÓNG COMMENT ========== */
 window.toggleComments = (postId) => {
   const el = document.getElementById("cm-" + postId);
   el.classList.toggle("open");
   if (el.classList.contains("open")) incrementView(postId);
 };
 
-/* ========== THÊM COMMENT ========== */
 window.addComment = async (postId) => {
   const input = document.getElementById("ci-" + postId);
   const text = input.value.trim();
@@ -727,7 +770,6 @@ window.addComment = async (postId) => {
   input.disabled = false;
 };
 
-/* ========== XÓA COMMENT ========== */
 window.deleteComment = async (postId, commentId) => {
   if (!confirm("Xóa bình luận này?")) return;
   try {
@@ -737,7 +779,6 @@ window.deleteComment = async (postId, commentId) => {
   }
 };
 
-/* ========== ESCAPE HTML ========== */
 function escapeHtml(s) {
   if (!s) return "";
   return s.replace(/[&<>"']/g, c => ({
@@ -745,7 +786,21 @@ function escapeHtml(s) {
   }[c]));
 }
 
-/* ========== RENDER ========== */
+/* Chuyển link YouTube thành embed */
+function youtubeEmbed(url) {
+  if (!url) return null;
+  const patterns = [
+    /youtube\.com\/watch\?v=([^&]+)/,
+    /youtu\.be\/([^?]+)/,
+    /youtube\.com\/embed\/([^?]+)/
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return `https://www.youtube.com/embed/${m[1]}`;
+  }
+  return null;
+}
+
 const feedEl = document.getElementById("feed");
 const postCountEl = document.getElementById("postCount");
 
@@ -757,7 +812,6 @@ onSnapshot(q, (snapshot) => {
     postsData[docSnap.id] = { id: docSnap.id, ...docSnap.data(), comments: [] };
   });
 
-  // Subscribe comments cho từng post
   Object.keys(postsData).forEach(pid => {
     if (!unsubscribeComments[pid]) {
       const cq = query(collection(db, "posts", pid, "comments"), orderBy("createdAt", "asc"));
@@ -791,12 +845,23 @@ function renderPost(p) {
 
   let mediaHTML = "";
   if (p.mediaURL) {
+    const isDataURI = p.mediaURL.startsWith("data:");
+    const ytEmbed = youtubeEmbed(p.mediaURL);
+
     if (p.mediaType === "image") {
       mediaHTML = `<img class="post-media" src="${p.mediaURL}" alt="">`;
     } else if (p.mediaType === "video") {
-      mediaHTML = `<video class="post-media" controls src="${p.mediaURL}"></video>`;
+      if (ytEmbed) {
+        mediaHTML = `<iframe class="post-media" src="${ytEmbed}" frameborder="0" allowfullscreen style="aspect-ratio:16/9;width:100%;"></iframe>`;
+      } else {
+        mediaHTML = `<video class="post-media" controls src="${p.mediaURL}"></video>`;
+      }
     } else if (p.mediaType === "audio") {
-      mediaHTML = `<audio controls src="${p.mediaURL}"></audio>`;
+      if (isDataURI) {
+        mediaHTML = `<audio controls src="${p.mediaURL}"></audio>`;
+      } else {
+        mediaHTML = `<a href="${p.mediaURL}" target="_blank" style="color:#4da3ff;display:block;margin-top:8px;">🎵 Mở nhạc: ${p.mediaURL}</a>`;
+      }
     }
   }
 
